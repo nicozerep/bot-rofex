@@ -21,7 +21,7 @@ from market_intel import collect_all_intel
 bcra = BCRACollector()
 ambito = AmbitoCollector()
 rofex = RofexCollector()
-engine = AnalysisEngine(capital=400_000, riesgo_max_pct=0.02)
+engine = AnalysisEngine(capital=600_000, riesgo_max_pct=0.048)
 
 
 def recolectar_datos() -> dict:

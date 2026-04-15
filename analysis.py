@@ -82,7 +82,7 @@ class AnalysisEngine:
     TP_PCT = 0.03  # Take Profit 3% (optimizado, antes era 4%)
     MIN_VOL = 5000  # Volumen mínimo para operar
 
-    def __init__(self, capital: float = 400_000, riesgo_max_pct: float = 0.02):
+    def __init__(self, capital: float = 600_000, riesgo_max_pct: float = 0.048):
         self.capital = capital
         self.riesgo_max = capital * riesgo_max_pct
         # Historiales por ticker
@@ -358,7 +358,7 @@ class AnalysisEngine:
         margen = nocional * 0.20  # 20% margen inicial
         max_margen = int(self.capital * 0.85 / margen)  # Usar max 85% del capital en margen
         max_riesgo = max(1, int(self.riesgo_max / (precio_futuro * self.SL_PCT * 1000)))
-        contratos = min(max_margen, max_riesgo, 2)  # Max 2 contratos (conservador)
+        contratos = min(max_margen, max_riesgo, 1)  # Max 1 contrato con $600k
         return {
             "contratos": contratos,
             "margen_requerido": round(margen * contratos),

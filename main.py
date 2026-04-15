@@ -179,20 +179,22 @@ def run_once():
 def run_scheduled():
     """Modo automático: escanea cada 15 min durante rueda."""
     print("Bot ROFEX iniciado en modo scheduled")
-    print("Escaneo cada 15 min (10:00-17:15) | Alertas instantaneas")
+    print("Escaneo cada 5 min (10:00-17:15) | Alertas instantaneas")
     send_startup_message()
 
     # Resumen de apertura y cierre
     schedule.every().day.at("10:00").do(run_once)
     schedule.every().day.at("17:15").do(run_once)
 
-    # Escaneo cada 15 minutos durante la rueda (solo señales nuevas)
+    # Escaneo cada 5 minutos durante la rueda (solo señales nuevas)
     for h in range(10, 17):
-        for m in [0, 15, 30, 45]:
+        for m in range(0, 60, 5):
             hora = f"{h:02d}:{m:02d}"
             if hora not in ["10:00"]:  # 10:00 ya tiene run_once
                 schedule.every().day.at(hora).do(run_scan)
     schedule.every().day.at("17:00").do(run_scan)
+    schedule.every().day.at("17:05").do(run_scan)
+    schedule.every().day.at("17:10").do(run_scan)
 
     print("Esperando proxima ejecucion...\n")
 

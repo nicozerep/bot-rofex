@@ -13,6 +13,8 @@ from telegram_bot import (
     send_signal, send_market_summary, send_startup_message, send_message,
 )
 from journal import add_trade
+from tracker import register_signal, update_signals
+from adaptive import recalibrate, is_strategy_enabled, format_performance_report
 
 
 bcra = BCRACollector()
@@ -91,8 +93,17 @@ def analizar_y_alertar(datos: dict):
     if is_macro_day(datetime.now()):
         print("  !! ATENCION: dia cercano a dato macro, senales con cautela")
 
-    # Enviar alertas y guardar en journal (solo señales nuevas)
+    # Filtrar señales de estrategias desactivadas por el sistema adaptativo
+    active_signals = []
     for signal in all_signals:
+        strat = getattr(signal, "estrategia", "")
+        if strat and not is_strategy_enabled(strat):
+            print(f"  [SKIP] {strat} desactivada por bajo rendimiento")
+            continue
+        active_signals.append(signal)
+
+    # Enviar alertas y guardar en journal (solo señales nuevas)
+    for signal in active_signals:
         key = signal_key(signal)
         if key in sent_signals_today:
             continue  # Ya enviada hoy, saltar
@@ -105,6 +116,10 @@ def analizar_y_alertar(datos: dict):
         print(f"  [{status}] Alerta enviada: {signal.tipo} {signal.ticker}")
 
         sent_signals_today.add(key)
+
+        # Registrar en tracker para seguimiento de resultado
+        if signal.precio_entrada > 0:
+            register_signal(signal, posicion)
 
         # Guardar en trade journal
         if signal.precio_entrada > 0:
@@ -159,14 +174,45 @@ def run_scan():
         sent_signals_today = set()
 
     datos = recolectar_datos()
+
+    # Trackear señales abiertas con precios actuales
+    futuros = datos.get("futuros", [])
+    if futuros:
+        cerradas = update_signals(futuros)
+        for c in cerradas:
+            emoji = "✅" if c["estado"] == "TP" else "❌" if c["estado"] == "SL" else "⏰"
+            msg = (
+                f"{emoji} <b>TRADE CERRADO: {c['estado']}</b>\n\n"
+                f"Ticker: {c['ticker']}\n"
+                f"Entrada: ${c['precio_entrada']:,.2f}\n"
+                f"Salida: ${c['precio_salida']:,.2f}\n"
+                f"P&L: <b>${c['pnl']:,.0f} ARS</b>\n"
+                f"Dias: {c['dias_abierta']}"
+            )
+            send_message(msg)
+            print(f"  Trade cerrado: {c['ticker']} {c['estado']} ${c['pnl']:,.0f}")
+
+        # Recalibrar después de cada cierre
+        if cerradas:
+            result = recalibrate()
+            for change in result.get("changes", []):
+                print(f"  [ADAPTIVE] {change}")
+                send_message(f"🔧 <b>Bot recalibrado:</b> {change}")
+
     signals = analizar_y_alertar(datos)
 
-    # Contar nuevas vs repetidas
     new_count = sum(1 for s in signals if signal_key(s) not in sent_signals_today)
     if signals:
         print(f"  {len(signals)} senal(es), {new_count} nueva(s)")
 
     return datos, signals
+
+
+def send_weekly_report():
+    """Envía reporte semanal de performance por Telegram."""
+    report = format_performance_report()
+    send_message(report)
+    print("  Reporte semanal enviado")
 
 
 def run_once():
@@ -185,6 +231,9 @@ def run_scheduled():
     # Resumen de apertura y cierre
     schedule.every().day.at("10:00").do(run_once)
     schedule.every().day.at("17:15").do(run_once)
+
+    # Reporte semanal de performance (viernes 17:30)
+    schedule.every().friday.at("17:30").do(send_weekly_report)
 
     # Escaneo cada 5 minutos durante la rueda (solo señales nuevas)
     for h in range(10, 17):

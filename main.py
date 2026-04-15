@@ -236,20 +236,18 @@ def run_scheduled():
 
     # Resumen de apertura y cierre
     schedule.every().day.at("10:00").do(run_once)
-    schedule.every().day.at("17:15").do(run_once)
+    schedule.every().day.at("15:15").do(run_once)
 
-    # Reporte semanal de performance (viernes 17:30)
-    schedule.every().friday.at("17:30").do(send_weekly_report)
+    # Reporte semanal de performance (viernes 15:30)
+    schedule.every().friday.at("15:30").do(send_weekly_report)
 
-    # Escaneo cada 5 minutos durante la rueda (solo señales nuevas)
-    for h in range(10, 17):
+    # Escaneo cada 5 minutos durante la rueda DLR (10:00-15:00)
+    for h in range(10, 15):
         for m in range(0, 60, 5):
             hora = f"{h:02d}:{m:02d}"
-            if hora not in ["10:00"]:  # 10:00 ya tiene run_once
+            if hora not in ["10:00"]:
                 schedule.every().day.at(hora).do(run_scan)
-    schedule.every().day.at("17:00").do(run_scan)
-    schedule.every().day.at("17:05").do(run_scan)
-    schedule.every().day.at("17:10").do(run_scan)
+    schedule.every().day.at("15:00").do(run_scan)
 
     print("Esperando proxima ejecucion...\n")
 

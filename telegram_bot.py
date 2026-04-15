@@ -58,7 +58,7 @@ def format_signal(signal: Signal, posicion: dict | None = None) -> str:
         msg += f"""
 
 <b>📊 OPERACION:</b>
-  Ticker: {signal.ticker}
+  Ticker: {signal.ticker} ({signal.tipo})
   Entrada: ${signal.precio_entrada:,.2f}
   Stop Loss: ${signal.stop_loss:,.2f} ({sl_pct:.1f}%)
   Take Profit: ${signal.take_profit:,.2f} ({tp_pct:.1f}%)

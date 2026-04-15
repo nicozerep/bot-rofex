@@ -15,6 +15,7 @@ from telegram_bot import (
 from journal import add_trade
 from tracker import register_signal, update_signals
 from adaptive import recalibrate, is_strategy_enabled, format_performance_report
+from market_intel import collect_all_intel
 
 
 bcra = BCRACollector()
@@ -46,11 +47,15 @@ def recolectar_datos() -> dict:
     for f in futuros:
         print(f"    {f['ticker']}: ${f['precio']:,.1f} (bid=${f.get('bid', '-')} ask=${f.get('ask', '-')} vol={f['volumen']})")
 
+    # Market intelligence (todas las variables que mueven futuros)
+    intel = collect_all_intel()
+
     return {
         "bcra": bcra_data,
         "dolares": dolares,
         "brechas": brechas,
         "futuros": futuros,
+        "intel": intel,
         "timestamp": datetime.now(),
     }
 
@@ -69,9 +74,10 @@ def analizar_y_alertar(datos: dict):
     futuros = datos.get("futuros", [])
     all_signals = []
 
-    # Ejecutar todas las estrategias
+    # Ejecutar todas las estrategias con market intelligence
+    intel = datos.get("intel", {})
     if futuros and spot > 0 and badlar > 0:
-        signals_strat = engine.run_all(futuros, spot, badlar)
+        signals_strat = engine.run_all(futuros, spot, badlar, intel=intel)
         all_signals.extend(signals_strat)
 
     # Señales macro

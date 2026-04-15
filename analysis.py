@@ -143,12 +143,42 @@ class AnalysisEngine:
         return (current - mean) / std
 
     # =========================================================================
-    # ESTRATEGIA 1: Z-score tasa implícita (VENTAS) — validada WR 77.8%
+    # ESTRATEGIA 1: Z-score tasa implícita (VENTAS) + market intelligence
     # =========================================================================
     def estrategia_zscore(
-        self, futures: list[dict], spot: float, badlar: float
+        self, futures: list[dict], spot: float, badlar: float,
+        intel: dict | None = None,
     ) -> list[Signal]:
         signals = []
+        intel = intel or {}
+
+        # Ajuste estacional al umbral z
+        season = intel.get("seasonality", {})
+        z_adjustment = season.get("z_adjustment", 0)
+        z_base = 2.5 + z_adjustment  # Más exigente en cosecha, menos en presión
+
+        # Tasa de referencia: LECAP si disponible, sino BADLAR
+        lecap_rate = None
+        lecaps = intel.get("lecaps")
+        if lecaps:
+            # Tomar LECAP con plazo más cercano a 60 días como referencia
+            mid_lecaps = [l for l in lecaps if 30 < l["days_to_maturity"] < 120]
+            if mid_lecaps:
+                lecap_rate = mid_lecaps[0]["tna"]
+
+        tasa_ref = lecap_rate if lecap_rate else badlar
+        ref_label = f"LECAP {lecap_rate:.1f}%" if lecap_rate else f"BADLAR {badlar:.1f}%"
+
+        # Info contextual del BRL
+        brl = intel.get("brl_usd", {})
+        brl_depreciando = brl.get("change_5d", 0) > 2  # Real depreciándose >2% en 5d
+
+        # Info de noticias
+        news = intel.get("news", [])
+        news_alcistas = sum(1 for n in news if n.sentimiento == "alcista" and n.relevancia >= 2)
+
+        # REM consensus
+        rem = intel.get("rem_exchange_rate", {})
 
         for fut in futures:
             ticker = fut["ticker"]
@@ -170,37 +200,56 @@ class AnalysisEngine:
             if z is None:
                 continue
 
-            desvio_badlar = ((tasa - badlar) / badlar * 100) if badlar > 0 else 0
+            desvio_ref = ((tasa - tasa_ref) / tasa_ref * 100) if tasa_ref > 0 else 0
 
-            # Filtro de liquidez: solo contratos con volumen real
+            # Filtro de liquidez
             if volumen < 5000:
                 continue
 
-            if z >= 2.5:
+            if z >= z_base:
                 # Confirmación OI
                 oi_confirma = self._check_oi_confirmation(ticker, oi_change)
 
                 # Confirmación calendario macro
                 macro_risk = is_macro_day(datetime.now())
 
-                # Calcular fuerza con confirmaciones
+                # Scoring multi-factor
                 score = 0
-                score += 2 if z >= 3.0 else 1  # z-score
-                score += 1 if oi_confirma == "confirma" else 0
-                score -= 1 if macro_risk else 0
+                score += 2 if z >= 3.0 else 1                    # z-score
+                score += 1 if oi_confirma == "confirma" else 0    # OI confirma
+                score -= 1 if macro_risk else 0                   # Macro risk
+                score += 1 if desvio_ref > 30 else 0              # Desvío vs LECAP/BADLAR alto
+                score -= 1 if brl_depreciando else 0              # BRL depreciándose = riesgo
+                score -= 1 if news_alcistas >= 2 else 0           # Muchas noticias alcistas = cuidado
+
+                # Comparar vs REM consensus
+                rem_vs_futuro = ""
+                if rem:
+                    # Buscar el período que matchea este vencimiento
+                    for periodo, vals in rem.items():
+                        med = vals.get("mediana")
+                        if med and abs(precio - med) / med < 0.15:
+                            if precio > med * 1.05:
+                                score += 1  # Futuro 5% arriba del consenso = overpriced
+                                rem_vs_futuro = f"Futuro ${precio:,.0f} > REM ${med:,.0f}"
+                            break
 
                 if score < 2:
-                    continue  # Solo enviar señales con score >= 2
+                    continue
 
                 fuerza = "FUERTE" if score >= 3 else "MODERADA"
                 sl_pct = 0.02
                 tp_pct = 0.04
 
-                motivo = f"Z-score {z:.1f} | Tasa {tasa:.1f}% vs BADLAR {badlar:.1f}%"
+                motivo = f"Z-score {z:.1f} | Tasa {tasa:.1f}% vs {ref_label} (desvio {desvio_ref:+.1f}%)"
                 if oi_confirma:
                     motivo += f" | OI {oi_confirma}"
+                if rem_vs_futuro:
+                    motivo += f" | {rem_vs_futuro}"
+                if brl_depreciando:
+                    motivo += " | BRL depreciando (riesgo)"
                 if macro_risk:
-                    motivo += " | ATENCION: dato macro cercano"
+                    motivo += " | Dato macro cercano"
 
                 signals.append(Signal(
                     tipo="VENTA",
@@ -491,13 +540,14 @@ class AnalysisEngine:
         return ""
 
     def run_all(
-        self, futures: list[dict], spot: float, badlar: float
+        self, futures: list[dict], spot: float, badlar: float,
+        intel: dict | None = None,
     ) -> list[Signal]:
         """Ejecuta todas las estrategias y retorna señales combinadas."""
         all_signals = []
 
-        # Estrategia 1: Z-score tasa implícita
-        s1 = self.estrategia_zscore(futures, spot, badlar)
+        # Estrategia 1: Z-score tasa implícita + market intelligence
+        s1 = self.estrategia_zscore(futures, spot, badlar, intel=intel)
         all_signals.extend(s1)
 
         # Estrategia 2: Calendar spread

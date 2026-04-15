@@ -43,47 +43,52 @@ def format_signal(signal: Signal, posicion: dict | None = None) -> str:
     }
     strat_label = strat_names.get(getattr(signal, "estrategia", ""), "")
 
-    msg = f"""
-{emoji_tipo.get(signal.tipo, "⚪")} <b>ALERTA {signal.tipo}</b> {emoji_fuerza.get(signal.fuerza, "")}
+    pos_label = "SHORT" if signal.tipo == "VENTA" else "LONG"
 
-<b>Estrategia:</b> {strat_label}
-<b>Ticker:</b> {signal.ticker}
-<b>Fuerza:</b> {signal.fuerza}
-<b>Motivo:</b> {signal.motivo}
-"""
+    msg = f"""{emoji_tipo.get(signal.tipo, "⚪")} <b>ALERTA {signal.tipo}</b> {emoji_fuerza.get(signal.fuerza, "")}"""
 
     if signal.precio_entrada > 0:
-        # Calcular P&L en ARS (1 contrato = USD 1.000)
         contratos = posicion["contratos"] if posicion else 1
         pnl_tp = abs(signal.take_profit - signal.precio_entrada) * 1000 * contratos
         pnl_sl = abs(signal.stop_loss - signal.precio_entrada) * 1000 * contratos
         ratio = pnl_tp / pnl_sl if pnl_sl > 0 else 0
-
         tp_pct = abs(signal.take_profit - signal.precio_entrada) / signal.precio_entrada * 100
         sl_pct = abs(signal.stop_loss - signal.precio_entrada) / signal.precio_entrada * 100
 
         msg += f"""
-<b>📊 Operación sugerida:</b>
+
+<b>📊 OPERACION:</b>
+  Ticker: {signal.ticker}
   Entrada: ${signal.precio_entrada:,.2f}
   Stop Loss: ${signal.stop_loss:,.2f} ({sl_pct:.1f}%)
   Take Profit: ${signal.take_profit:,.2f} ({tp_pct:.1f}%)
 
-<b>💵 P&amp;L estimado ({contratos} contrato{"s" if contratos > 1 else ""}):</b>
+<b>🔻 POSICION: {pos_label}</b>
+  Contratos: {contratos}"""
+
+        if posicion:
+            msg += f"""
+  Margen requerido: ${posicion['margen_requerido']:,.0f}
+  Capital libre: ${posicion['capital_libre']:,.0f}"""
+
+        msg += f"""
+
+<b>💵 P&amp;L ESTIMADO:</b>
   ✅ Si toca TP: <b>+${pnl_tp:,.0f} ARS</b>
   ❌ Si toca SL: <b>-${pnl_sl:,.0f} ARS</b>
   📐 Ratio R/B: 1:{ratio:.1f}
-"""
 
-    if signal.tasa_implicita:
-        msg += f"  Tasa implícita: {signal.tasa_implicita:.1f}%\n"
+<b>📋 INFO DEL TRADE:</b>
+  Estrategia: {strat_label}
+  Fuerza: {signal.fuerza}"""
 
-    if posicion:
-        msg += f"""
-<b>💰 Posición:</b>
-  Contratos: {posicion['contratos']}
-  Margen requerido: ${posicion['margen_requerido']:,.0f}
-  Capital libre: ${posicion['capital_libre']:,.0f}
-"""
+        if signal.tasa_implicita:
+            msg += f"\n  Tasa implicita: {signal.tasa_implicita:.1f}%"
+
+        msg += f"\n  {signal.motivo}"
+
+    else:
+        msg += f"\n\n<b>Ticker:</b> {signal.ticker}\n<b>Motivo:</b> {signal.motivo}"
 
     return msg.strip()
 

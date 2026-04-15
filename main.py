@@ -91,8 +91,12 @@ def analizar_y_alertar(datos: dict):
     if is_macro_day(datetime.now()):
         print("  !! ATENCION: dia cercano a dato macro, senales con cautela")
 
-    # Enviar alertas y guardar en journal
+    # Enviar alertas y guardar en journal (solo señales nuevas)
     for signal in all_signals:
+        key = signal_key(signal)
+        if key in sent_signals_today:
+            continue  # Ya enviada hoy, saltar
+
         posicion = None
         if signal.precio_entrada > 0:
             posicion = engine.calcular_posicion(signal.precio_entrada)
@@ -100,7 +104,9 @@ def analizar_y_alertar(datos: dict):
         status = "OK" if sent else "FAIL"
         print(f"  [{status}] Alerta enviada: {signal.tipo} {signal.ticker}")
 
-        # Guardar en trade journal (HTML en OneDrive)
+        sent_signals_today.add(key)
+
+        # Guardar en trade journal
         if signal.precio_entrada > 0:
             try:
                 add_trade(signal, posicion)
@@ -135,35 +141,64 @@ def enviar_resumen(datos: dict):
     print(f"  {'OK' if sent else 'FAIL'} Resumen enviado")
 
 
-def run_once():
-    """Ejecuta un ciclo completo: recolectar, analizar, alertar."""
+sent_signals_today: set = set()
+
+
+def signal_key(signal) -> str:
+    """Genera una clave unica para evitar enviar la misma señal dos veces."""
+    return f"{signal.estrategia}|{signal.ticker}|{signal.tipo}"
+
+
+def run_scan():
+    """Escanea el mercado y envía solo señales NUEVAS."""
+    global sent_signals_today
+
+    # Reset diario a las 9:55
+    now = datetime.now()
+    if now.hour == 9 and now.minute < 56:
+        sent_signals_today = set()
+
     datos = recolectar_datos()
     signals = analizar_y_alertar(datos)
+
+    # Contar nuevas vs repetidas
+    new_count = sum(1 for s in signals if signal_key(s) not in sent_signals_today)
+    if signals:
+        print(f"  {len(signals)} senal(es), {new_count} nueva(s)")
+
+    return datos, signals
+
+
+def run_once():
+    """Ejecuta un ciclo completo con resumen."""
+    datos, signals = run_scan()
     enviar_resumen(datos)
     return datos, signals
 
 
 def run_scheduled():
-    """Modo automático con schedule."""
+    """Modo automático: escanea cada 15 min durante rueda."""
     print("Bot ROFEX iniciado en modo scheduled")
+    print("Escaneo cada 15 min (10:00-17:15) | Alertas instantaneas")
     send_startup_message()
 
-    # Resumen de apertura a las 10:15
-    schedule.every().day.at("10:15").do(run_once)
-
-    # Chequeo cada 2 horas durante rueda
-    for hora in ["12:00", "14:00", "16:00"]:
-        schedule.every().day.at(hora).do(run_once)
-
-    # Resumen de cierre a las 17:15
+    # Resumen de apertura y cierre
+    schedule.every().day.at("10:00").do(run_once)
     schedule.every().day.at("17:15").do(run_once)
 
-    print("Horarios configurados: 10:15, 12:00, 14:00, 16:00, 17:15")
+    # Escaneo cada 15 minutos durante la rueda (solo señales nuevas)
+    for h in range(10, 17):
+        for m in [0, 15, 30, 45]:
+            hora = f"{h:02d}:{m:02d}"
+            if hora not in ["10:00"]:  # 10:00 ya tiene run_once
+                schedule.every().day.at(hora).do(run_scan)
+    schedule.every().day.at("17:00").do(run_scan)
+
     print("Esperando proxima ejecucion...\n")
 
     while True:
         schedule.run_pending()
-        time.sleep(60)
+        time.sleep(30)
 
 
 if __name__ == "__main__":

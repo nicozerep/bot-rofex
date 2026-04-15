@@ -59,11 +59,14 @@ def format_signal(signal: Signal, posicion: dict | None = None) -> str:
         pnl_sl = abs(signal.stop_loss - signal.precio_entrada) * 1000 * contratos
         ratio = pnl_tp / pnl_sl if pnl_sl > 0 else 0
 
+        tp_pct = abs(signal.take_profit - signal.precio_entrada) / signal.precio_entrada * 100
+        sl_pct = abs(signal.stop_loss - signal.precio_entrada) / signal.precio_entrada * 100
+
         msg += f"""
 <b>📊 Operación sugerida:</b>
   Entrada: ${signal.precio_entrada:,.2f}
-  Stop Loss: ${signal.stop_loss:,.2f}
-  Take Profit: ${signal.take_profit:,.2f}
+  Stop Loss: ${signal.stop_loss:,.2f} ({sl_pct:.1f}%)
+  Take Profit: ${signal.take_profit:,.2f} ({tp_pct:.1f}%)
 
 <b>💵 P&amp;L estimado ({contratos} contrato{"s" if contratos > 1 else ""}):</b>
   ✅ Si toca TP: <b>+${pnl_tp:,.0f} ARS</b>

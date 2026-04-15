@@ -1,44 +1,36 @@
 """
-Motor de análisis v2: multi-estrategia con confirmaciones.
-Validado con datos reales MATBA-ROFEX (oct25-abr26).
+Motor de análisis v3: estrategias validadas con datos reales corregidos.
+Backtest oct25-abr26 sobre 906 records reales de CEM MATBA-ROFEX.
 
-Estrategias:
-1. Z-score tasa implícita (solo VENTAS) — validada WR 77.8%
-2. Calendar spread mean reversion — nueva
-3. OI divergence (precio sube + OI baja = debilidad) — nueva
-4. Volumen spike — nueva
+Estrategias (por P&L y WR en backtest real):
+1. Z-Score tasa 5d: z>=2.0 solo VENTAS (WR 63%, 0.23/dia)
+2. Settlement Gap: gap diario >=0.5% (WR 56%, 0.88/dia) — NUEVA
+3. OI Momentum: OI sube >=5% diario (WR 66%, 0.87/dia) — NUEVA
+4. Volume Spike: vol ratio >=2x (WR 63%, 1.08/dia) — NUEVA
 
-Confirmaciones: OI change, volatilidad opciones, calendario macro.
+Combinadas: ~1.2 trades/dia, WR ~60%, SL 2% / TP 3%
 """
 
 import json
-import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-
 
 HISTORY_FILE = Path(__file__).parent / "data" / "tasa_history.json"
 
-# Calendario macro Argentina 2026 (fechas aproximadas)
-# Formato: lista de (mes, dia, evento)
 MACRO_EVENTS = [
-    # IPC INDEC (generalmente 2da/3ra semana del mes)
     (1, 15), (2, 13), (3, 13), (4, 11), (5, 14), (6, 12),
     (7, 15), (8, 13), (9, 11), (10, 15), (11, 13), (12, 11),
 ]
 
 
 def is_macro_day(fecha: datetime, buffer_days: int = 1) -> bool:
-    """Verifica si una fecha está cerca de un evento macro importante."""
     for mes, dia in MACRO_EVENTS:
         try:
             evento = datetime(fecha.year, mes, dia)
-            diff = abs((fecha - evento).days)
-            if diff <= buffer_days:
+            if abs((fecha - evento).days) <= buffer_days:
                 return True
         except ValueError:
             continue
@@ -47,14 +39,14 @@ def is_macro_day(fecha: datetime, buffer_days: int = 1) -> bool:
 
 @dataclass
 class Signal:
-    tipo: str           # "VENTA", "CALENDAR SPREAD"
+    tipo: str
     ticker: str
     motivo: str
-    fuerza: str         # "MODERADA", "FUERTE"
+    fuerza: str
     precio_entrada: float
     stop_loss: float
     take_profit: float
-    estrategia: str     # "z-score", "calendar", "oi-divergence", "vol-spike"
+    estrategia: str
     tasa_implicita: float | None = None
     datos_extra: dict | None = None
 
@@ -77,27 +69,27 @@ def dias_al_vencimiento(ticker: str) -> int:
         mes = meses.get(mes_str, 0)
         if mes == 0:
             return 0
-        if mes == 12:
-            vto = datetime(anio + 1, 1, 1)
-        else:
-            vto = datetime(anio, mes + 1, 1)
-        dias = (vto - datetime.now()).days
-        return max(dias, 1)
+        vto = datetime(anio, mes + 1, 1) if mes < 12 else datetime(anio + 1, 1, 1)
+        return max((vto - datetime.now()).days, 1)
     except Exception:
         return 0
 
 
 class AnalysisEngine:
-    """Motor de análisis multi-estrategia para futuros de dólar."""
+    """Motor de análisis v3 — estrategias validadas con backtest real corregido."""
+
+    SL_PCT = 0.02  # Stop Loss 2%
+    TP_PCT = 0.03  # Take Profit 3% (optimizado, antes era 4%)
+    MIN_VOL = 5000  # Volumen mínimo para operar
 
     def __init__(self, capital: float = 400_000, riesgo_max_pct: float = 0.02):
         self.capital = capital
         self.riesgo_max = capital * riesgo_max_pct
+        # Historiales por ticker
         self.tasa_history: dict[str, list[float]] = {}
         self.price_history: dict[str, list[float]] = {}
-        self.vol_history: dict[str, list[int]] = {}
+        self.vol_history: dict[str, list[float]] = {}
         self.oi_history: dict[str, list[float]] = {}
-        self.spread_history: dict[str, list[float]] = {}
         self._load_history()
 
     def _load_history(self):
@@ -109,7 +101,6 @@ class AnalysisEngine:
                 self.price_history = data.get("price", {})
                 self.vol_history = data.get("vol", {})
                 self.oi_history = data.get("oi", {})
-                self.spread_history = data.get("spread", {})
             except Exception:
                 pass
 
@@ -121,10 +112,9 @@ class AnalysisEngine:
                 "price": self.price_history,
                 "vol": self.vol_history,
                 "oi": self.oi_history,
-                "spread": self.spread_history,
             }, f)
 
-    def _append_history(self, store: dict, key: str, value: float, max_len: int = 30):
+    def _append(self, store: dict, key: str, value: float, max_len: int = 30) -> list[float]:
         hist = store.get(key, [])
         hist.append(value)
         if len(hist) > max_len:
@@ -132,7 +122,7 @@ class AnalysisEngine:
         store[key] = hist
         return hist
 
-    def _z_score(self, values: list[float], current: float, window: int = 10) -> float | None:
+    def _z_score(self, values: list[float], current: float, window: int) -> float | None:
         if len(values) < window + 1:
             return None
         prev = values[-(window + 1):-1]
@@ -142,429 +132,218 @@ class AnalysisEngine:
             return None
         return (current - mean) / std
 
+    def _make_signal(self, ticker, precio, estrategia, motivo, fuerza, spot, datos_extra=None):
+        dias = dias_al_vencimiento(ticker)
+        tasa = calcular_tasa_implicita(precio, spot, dias) if spot > 0 and dias > 0 else None
+        return Signal(
+            tipo="VENTA",
+            ticker=ticker,
+            motivo=motivo,
+            fuerza=fuerza,
+            precio_entrada=precio,
+            stop_loss=round(precio * (1 + self.SL_PCT), 2),
+            take_profit=round(precio * (1 - self.TP_PCT), 2),
+            estrategia=estrategia,
+            tasa_implicita=tasa,
+            datos_extra=datos_extra,
+        )
+
     # =========================================================================
-    # ESTRATEGIA 1: Z-score tasa implícita (VENTAS) + market intelligence
+    # ESTRATEGIA 1: Z-Score Tasa 5d (WR 63%, backtest)
+    # Vender cuando la tasa implícita sube 2+ desvíos en 5 días
     # =========================================================================
-    def estrategia_zscore(
-        self, futures: list[dict], spot: float, badlar: float,
-        intel: dict | None = None,
-    ) -> list[Signal]:
+    def estrategia_zscore(self, futures, spot, badlar, intel=None):
         signals = []
         intel = intel or {}
-
-        # Ajuste estacional al umbral z
         season = intel.get("seasonality", {})
-        z_adjustment = season.get("z_adjustment", 0)
-        z_base = 2.5 + z_adjustment  # Más exigente en cosecha, menos en presión
-
-        # Tasa de referencia: LECAP si disponible, sino BADLAR
-        lecap_rate = None
-        lecaps = intel.get("lecaps")
-        if lecaps:
-            # Tomar LECAP con plazo más cercano a 60 días como referencia
-            mid_lecaps = [l for l in lecaps if 30 < l["days_to_maturity"] < 120]
-            if mid_lecaps:
-                lecap_rate = mid_lecaps[0]["tna"]
-
-        tasa_ref = lecap_rate if lecap_rate else badlar
-        ref_label = f"LECAP {lecap_rate:.1f}%" if lecap_rate else f"BADLAR {badlar:.1f}%"
-
-        # Info contextual del BRL
-        brl = intel.get("brl_usd", {})
-        brl_depreciando = brl.get("change_5d", 0) > 2  # Real depreciándose >2% en 5d
-
-        # Info de noticias
-        news = intel.get("news", [])
-        news_alcistas = sum(1 for n in news if n.sentimiento == "alcista" and n.relevancia >= 2)
-
-        # REM consensus
-        rem = intel.get("rem_exchange_rate", {})
+        z_adj = season.get("z_adjustment", 0)
+        z_threshold = 2.0 + z_adj
 
         for fut in futures:
-            ticker = fut["ticker"]
-            precio = fut["precio"]
-            volumen = fut.get("volumen", 0)
-            oi = fut.get("oi", 0)
-            oi_change = fut.get("oi_change", None)
+            ticker, precio, vol = fut["ticker"], fut["precio"], fut.get("volumen", 0)
+            oi_change = fut.get("oi_change")
             dias = dias_al_vencimiento(ticker)
-
-            if dias <= 5:
+            if dias <= 5 or vol < self.MIN_VOL:
                 continue
 
             tasa = calcular_tasa_implicita(precio, spot, dias)
-            tasa_hist = self._append_history(self.tasa_history, ticker, tasa)
-            self._append_history(self.price_history, ticker, precio)
-            self._append_history(self.oi_history, ticker, oi)
-
-            z = self._z_score(tasa_hist, tasa, window=10)
-            if z is None:
+            tasa_hist = self._append(self.tasa_history, ticker, tasa)
+            z = self._z_score(tasa_hist, tasa, window=5)
+            if z is None or z < z_threshold:
                 continue
 
-            desvio_ref = ((tasa - tasa_ref) / tasa_ref * 100) if tasa_ref > 0 else 0
-
-            # Filtro de liquidez
-            if volumen < 5000:
+            # Scoring
+            score = 2 if z >= 3.0 else 1
+            if oi_change and oi_change > 0:
+                score += 1
+            if is_macro_day(datetime.now()):
+                score -= 1
+            if score < 1:
                 continue
 
-            if z >= z_base:
-                # Confirmación OI
-                oi_confirma = self._check_oi_confirmation(ticker, oi_change)
+            fuerza = "FUERTE" if score >= 3 else "MODERADA"
+            motivo = f"Z-score {z:.1f} (5d) | Tasa {tasa:.1f}% vs BADLAR {badlar:.1f}%"
 
-                # Confirmación calendario macro
-                macro_risk = is_macro_day(datetime.now())
-
-                # Scoring multi-factor
-                score = 0
-                score += 2 if z >= 3.0 else 1                    # z-score
-                score += 1 if oi_confirma == "confirma" else 0    # OI confirma
-                score -= 1 if macro_risk else 0                   # Macro risk
-                score += 1 if desvio_ref > 30 else 0              # Desvío vs LECAP/BADLAR alto
-                score -= 1 if brl_depreciando else 0              # BRL depreciándose = riesgo
-                score -= 1 if news_alcistas >= 2 else 0           # Muchas noticias alcistas = cuidado
-
-                # Comparar vs REM consensus
-                rem_vs_futuro = ""
-                if rem:
-                    # Buscar el período que matchea este vencimiento
-                    for periodo, vals in rem.items():
-                        med = vals.get("mediana")
-                        if med and abs(precio - med) / med < 0.15:
-                            if precio > med * 1.05:
-                                score += 1  # Futuro 5% arriba del consenso = overpriced
-                                rem_vs_futuro = f"Futuro ${precio:,.0f} > REM ${med:,.0f}"
-                            break
-
-                if score < 2:
-                    continue
-
-                fuerza = "FUERTE" if score >= 3 else "MODERADA"
-                sl_pct = 0.02
-                tp_pct = 0.04
-
-                motivo = f"Z-score {z:.1f} | Tasa {tasa:.1f}% vs {ref_label} (desvio {desvio_ref:+.1f}%)"
-                if oi_confirma:
-                    motivo += f" | OI {oi_confirma}"
-                if rem_vs_futuro:
-                    motivo += f" | {rem_vs_futuro}"
-                if brl_depreciando:
-                    motivo += " | BRL depreciando (riesgo)"
-                if macro_risk:
-                    motivo += " | Dato macro cercano"
-
-                signals.append(Signal(
-                    tipo="VENTA",
-                    ticker=ticker,
-                    motivo=motivo,
-                    fuerza=fuerza,
-                    precio_entrada=precio,
-                    stop_loss=round(precio * (1 + sl_pct), 2),
-                    take_profit=round(precio * (1 - tp_pct), 2),
-                    estrategia="z-score",
-                    tasa_implicita=tasa,
-                    datos_extra={
-                        "z_score": round(z, 2),
-                        "desvio_badlar": round(desvio_badlar, 1),
-                        "oi": oi,
-                        "oi_change": oi_change,
-                        "oi_confirma": oi_confirma,
-                        "macro_risk": macro_risk,
-                        "volumen": volumen,
-                        "dias_vto": dias,
-                    },
-                ))
-
+            signals.append(self._make_signal(
+                ticker, precio, "z-score", motivo, fuerza, spot,
+                {"z_score": round(z, 2), "volumen": vol, "dias_vto": dias},
+            ))
         return signals
 
     # =========================================================================
-    # ESTRATEGIA 2: Calendar spread mean reversion
-    # Cuando el spread entre dos vencimientos se desvía mucho de su media
+    # ESTRATEGIA 2: Settlement Gap (WR 56-62%, 0.88/dia, backtest)
+    # Vender cuando el settlement sube >= 0.5% en un día
     # =========================================================================
-    def estrategia_calendar_spread(
-        self, futures: list[dict], spot: float
-    ) -> list[Signal]:
-        signals = []
-
-        if len(futures) < 2:
-            return signals
-
-        futs_sorted = sorted(futures, key=lambda f: dias_al_vencimiento(f["ticker"]))
-
-        for i in range(len(futs_sorted) - 1):
-            corto = futs_sorted[i]
-            largo = futs_sorted[i + 1]
-
-            dias_corto = dias_al_vencimiento(corto["ticker"])
-            dias_largo = dias_al_vencimiento(largo["ticker"])
-
-            if dias_corto <= 10 or dias_largo <= 15:
-                continue
-
-            tasa_corto = calcular_tasa_implicita(corto["precio"], spot, dias_corto)
-            tasa_largo = calcular_tasa_implicita(largo["precio"], spot, dias_largo)
-            spread_tasa = tasa_largo - tasa_corto
-
-            spread_key = f"{corto['ticker']}_{largo['ticker']}"
-            spread_hist = self._append_history(self.spread_history, spread_key, spread_tasa)
-
-            z = self._z_score(spread_hist, spread_tasa, window=10)
-            if z is None:
-                continue
-
-            # Spread se invierte mucho (corto paga más que largo): vender corto
-            if z < -2.0 and spread_tasa < -3:
-                signals.append(Signal(
-                    tipo="VENTA",
-                    ticker=corto["ticker"],
-                    motivo=(
-                        f"Calendar spread invertido z={z:.1f} | "
-                        f"{corto['ticker']} tasa {tasa_corto:.1f}% > "
-                        f"{largo['ticker']} tasa {tasa_largo:.1f}% "
-                        f"(spread {spread_tasa:.1f}%)"
-                    ),
-                    fuerza="FUERTE" if z < -3.0 else "MODERADA",
-                    precio_entrada=corto["precio"],
-                    stop_loss=round(corto["precio"] * 1.015, 2),
-                    take_profit=round(corto["precio"] * 0.97, 2),
-                    estrategia="calendar-spread",
-                    tasa_implicita=tasa_corto,
-                    datos_extra={
-                        "z_score": round(z, 2),
-                        "spread_tasa": round(spread_tasa, 2),
-                        "ticker_largo": largo["ticker"],
-                        "tasa_corto": round(tasa_corto, 2),
-                        "tasa_largo": round(tasa_largo, 2),
-                    },
-                ))
-
-            # Spread se amplía mucho (largo paga mucho más que corto): vender largo
-            elif z > 2.0 and spread_tasa > 5:
-                signals.append(Signal(
-                    tipo="VENTA",
-                    ticker=largo["ticker"],
-                    motivo=(
-                        f"Calendar spread amplio z={z:.1f} | "
-                        f"{largo['ticker']} tasa {tasa_largo:.1f}% >> "
-                        f"{corto['ticker']} tasa {tasa_corto:.1f}% "
-                        f"(spread {spread_tasa:.1f}%)"
-                    ),
-                    fuerza="FUERTE" if z > 3.0 else "MODERADA",
-                    precio_entrada=largo["precio"],
-                    stop_loss=round(largo["precio"] * 1.015, 2),
-                    take_profit=round(largo["precio"] * 0.97, 2),
-                    estrategia="calendar-spread",
-                    tasa_implicita=tasa_largo,
-                    datos_extra={
-                        "z_score": round(z, 2),
-                        "spread_tasa": round(spread_tasa, 2),
-                        "ticker_corto": corto["ticker"],
-                        "tasa_corto": round(tasa_corto, 2),
-                        "tasa_largo": round(tasa_largo, 2),
-                    },
-                ))
-
-        return signals
-
-    # =========================================================================
-    # ESTRATEGIA 3: OI divergence (precio sube pero OI baja = debilidad)
-    # =========================================================================
-    def estrategia_oi_divergence(
-        self, futures: list[dict], spot: float
-    ) -> list[Signal]:
+    def estrategia_gap(self, futures, spot):
         signals = []
 
         for fut in futures:
-            ticker = fut["ticker"]
-            precio = fut["precio"]
+            ticker, precio, vol = fut["ticker"], fut["precio"], fut.get("volumen", 0)
+            dias = dias_al_vencimiento(ticker)
+            if dias <= 5 or vol < self.MIN_VOL:
+                continue
+
+            price_hist = self._append(self.price_history, ticker, precio)
+            if len(price_hist) < 2:
+                continue
+
+            prev_price = price_hist[-2]
+            if prev_price <= 0:
+                continue
+
+            gap_pct = (precio - prev_price) / prev_price * 100
+
+            if gap_pct >= 0.5:
+                fuerza = "FUERTE" if gap_pct >= 1.0 else "MODERADA"
+                motivo = f"Gap diario +{gap_pct:.1f}% | ${prev_price:,.0f} -> ${precio:,.0f}"
+
+                signals.append(self._make_signal(
+                    ticker, precio, "gap", motivo, fuerza, spot,
+                    {"gap_pct": round(gap_pct, 2), "prev_price": prev_price, "volumen": vol},
+                ))
+        return signals
+
+    # =========================================================================
+    # ESTRATEGIA 3: OI Momentum (WR 66%, 0.87/dia, backtest)
+    # Vender cuando OI sube >= 5% en un día (nuevas posiciones = overreaction)
+    # =========================================================================
+    def estrategia_oi_momentum(self, futures, spot):
+        signals = []
+
+        for fut in futures:
+            ticker, precio, vol = fut["ticker"], fut["precio"], fut.get("volumen", 0)
             oi = fut.get("oi", 0)
-            oi_change = fut.get("oi_change", None)
-            volumen = fut.get("volumen", 0)
             dias = dias_al_vencimiento(ticker)
-
-            if dias <= 10 or oi_change is None:
+            if dias <= 5 or vol < self.MIN_VOL or oi <= 0:
                 continue
 
-            price_hist = self.price_history.get(ticker, [])
-            oi_hist = self.oi_history.get(ticker, [])
-
-            if len(price_hist) < 5 or len(oi_hist) < 5:
+            oi_hist = self._append(self.oi_history, ticker, oi)
+            if len(oi_hist) < 2:
                 continue
 
-            # Precio subió en los últimos 3 días
-            price_change_3d = (precio / price_hist[-4] - 1) * 100 if len(price_hist) >= 4 else 0
+            prev_oi = oi_hist[-2]
+            if prev_oi <= 0:
+                continue
 
-            # OI bajó en los últimos 3 días
-            oi_change_3d = oi - oi_hist[-4] if len(oi_hist) >= 4 else 0
+            oi_change_pct = (oi - prev_oi) / prev_oi * 100
 
-            # Divergencia bajista: precio sube + OI baja (posiciones se cierran, no hay convicción)
-            if price_change_3d > 1.5 and oi_change_3d < -10000 and volumen > 20000:
-                tasa = calcular_tasa_implicita(precio, spot, dias)
+            if oi_change_pct >= 5.0:
+                fuerza = "FUERTE" if oi_change_pct >= 10.0 else "MODERADA"
+                motivo = f"OI sube +{oi_change_pct:.1f}% | {prev_oi:,.0f} -> {oi:,.0f} contratos"
 
-                signals.append(Signal(
-                    tipo="VENTA",
-                    ticker=ticker,
-                    motivo=(
-                        f"OI divergencia bajista | Precio subio {price_change_3d:.1f}% "
-                        f"pero OI cayo {oi_change_3d:,.0f} contratos en 3d"
-                    ),
-                    fuerza="MODERADA",
-                    precio_entrada=precio,
-                    stop_loss=round(precio * 1.015, 2),
-                    take_profit=round(precio * 0.03 + precio, 2) if False else round(precio * 0.97, 2),
-                    estrategia="oi-divergence",
-                    tasa_implicita=tasa,
-                    datos_extra={
-                        "price_change_3d": round(price_change_3d, 2),
-                        "oi_change_3d": oi_change_3d,
-                        "volumen": volumen,
-                        "oi": oi,
-                    },
+                signals.append(self._make_signal(
+                    ticker, precio, "oi-momentum", motivo, fuerza, spot,
+                    {"oi_change_pct": round(oi_change_pct, 2), "oi": oi, "volumen": vol},
                 ))
-
         return signals
 
     # =========================================================================
-    # ESTRATEGIA 4: Volume spike (volumen anormalmente alto = algo pasa)
+    # ESTRATEGIA 4: Volume Spike (WR 63%, 1.08/dia, backtest)
+    # Vender cuando el volumen es >= 2x su media de 10 días
     # =========================================================================
-    def estrategia_volume_spike(
-        self, futures: list[dict], spot: float, badlar: float
-    ) -> list[Signal]:
+    def estrategia_volume(self, futures, spot):
         signals = []
 
         for fut in futures:
-            ticker = fut["ticker"]
-            precio = fut["precio"]
-            volumen = fut.get("volumen", 0)
+            ticker, precio, vol = fut["ticker"], fut["precio"], fut.get("volumen", 0)
             dias = dias_al_vencimiento(ticker)
-
-            if dias <= 5 or volumen == 0:
+            if dias <= 5 or vol < 10000:  # Mínimo más alto para vol spike
                 continue
 
-            vol_hist = self._append_history(self.vol_history, ticker, volumen)
-
+            vol_hist = self._append(self.vol_history, ticker, vol)
             if len(vol_hist) < 11:
                 continue
 
-            # Z-score del volumen
             prev_vol = vol_hist[-11:-1]
             vol_mean = np.mean(prev_vol)
-            vol_std = np.std(prev_vol)
-
-            if vol_std <= 0 or vol_mean <= 0:
+            if vol_mean <= 0:
                 continue
 
-            vol_z = (volumen - vol_mean) / vol_std
+            vol_ratio = vol / vol_mean
 
-            # Volumen > 3x desviaciones = spike
-            if vol_z >= 3.0:
-                tasa = calcular_tasa_implicita(precio, spot, dias)
-                tasa_hist = self.tasa_history.get(ticker, [])
+            if vol_ratio >= 2.0:
+                fuerza = "FUERTE" if vol_ratio >= 3.0 else "MODERADA"
+                motivo = f"Volumen {vol_ratio:.1f}x media | {vol:,} vs media {vol_mean:,.0f}"
 
-                # Si además la tasa implícita subió, es señal de VENTA
-                tasa_z = self._z_score(tasa_hist, tasa, window=10) if len(tasa_hist) >= 11 else None
-
-                if tasa_z is not None and tasa_z > 1.0:
-                    signals.append(Signal(
-                        tipo="VENTA",
-                        ticker=ticker,
-                        motivo=(
-                            f"Volumen spike z={vol_z:.1f} ({volumen:,} vs media {vol_mean:,.0f}) "
-                            f"+ tasa subiendo (z={tasa_z:.1f})"
-                        ),
-                        fuerza="FUERTE" if vol_z >= 4.0 else "MODERADA",
-                        precio_entrada=precio,
-                        stop_loss=round(precio * 1.02, 2),
-                        take_profit=round(precio * 0.96, 2),
-                        estrategia="vol-spike",
-                        tasa_implicita=tasa,
-                        datos_extra={
-                            "vol_z": round(vol_z, 2),
-                            "tasa_z": round(tasa_z, 2),
-                            "volumen": volumen,
-                            "vol_media": round(vol_mean),
-                        },
-                    ))
-
+                signals.append(self._make_signal(
+                    ticker, precio, "vol-spike", motivo, fuerza, spot,
+                    {"vol_ratio": round(vol_ratio, 2), "volumen": vol, "vol_media": round(vol_mean)},
+                ))
         return signals
 
     # =========================================================================
-    # Señales macro (informativas, no generan trade directo)
+    # Señales macro (informativas)
     # =========================================================================
-    def analizar_brecha(self, brecha: dict) -> list[Signal]:
+    def analizar_brecha(self, brecha):
         signals = []
-        blue_brecha = brecha.get("blue_vs_oficial", 0)
-
-        if blue_brecha > 40:
+        blue = brecha.get("blue_vs_oficial", 0)
+        if blue > 40:
             signals.append(Signal(
-                tipo="VENTA",
-                ticker="DLR (vto mas cercano con liquidez)",
-                motivo=f"Brecha blue/oficial en {blue_brecha:.1f}% - posible overreaction",
-                fuerza="MODERADA" if blue_brecha < 60 else "FUERTE",
+                tipo="VENTA", ticker="DLR (vto con liquidez)",
+                motivo=f"Brecha blue/oficial en {blue:.1f}%",
+                fuerza="FUERTE" if blue > 60 else "MODERADA",
                 precio_entrada=0, stop_loss=0, take_profit=0,
                 estrategia="macro-brecha",
-                datos_extra={"brecha_blue": blue_brecha},
             ))
         return signals
 
-    def analizar_reservas(self, reservas_df: pd.DataFrame) -> list[Signal]:
+    def analizar_reservas(self, reservas_df):
         signals = []
         if len(reservas_df) < 2:
             return signals
-
         ultimo = reservas_df.iloc[-1]["valor"]
         anterior = reservas_df.iloc[-2]["valor"]
         cambio = ultimo - anterior
-
         if cambio < -200:
             signals.append(Signal(
-                tipo="VENTA",
-                ticker="DLR (vto mas cercano con liquidez)",
-                motivo=f"Reservas BCRA cayeron USD {abs(cambio):.0f}M (actual: USD {ultimo:.0f}M)",
-                fuerza="MODERADA" if cambio > -500 else "FUERTE",
+                tipo="VENTA", ticker="DLR (vto con liquidez)",
+                motivo=f"Reservas BCRA cayeron USD {abs(cambio):.0f}M",
+                fuerza="FUERTE" if cambio < -500 else "MODERADA",
                 precio_entrada=0, stop_loss=0, take_profit=0,
                 estrategia="macro-reservas",
-                datos_extra={"reservas": ultimo, "cambio": cambio},
             ))
         return signals
 
     # =========================================================================
-    # Helpers
+    # Run All
     # =========================================================================
-    def _check_oi_confirmation(self, ticker: str, oi_change: float | None) -> str:
-        """Verifica OI como confirmación de señal de VENTA."""
-        if oi_change is None:
-            return ""
-        if oi_change > 0:
-            return "confirma"   # OI sube = nuevas posiciones, overreaction real
-        elif oi_change < -5000:
-            return "debil"      # OI baja mucho = se cierran posiciones
-        return ""
-
-    def run_all(
-        self, futures: list[dict], spot: float, badlar: float,
-        intel: dict | None = None,
-    ) -> list[Signal]:
-        """Ejecuta todas las estrategias y retorna señales combinadas."""
+    def run_all(self, futures, spot, badlar, intel=None):
         all_signals = []
 
-        # Estrategia 1: Z-score tasa implícita + market intelligence
-        s1 = self.estrategia_zscore(futures, spot, badlar, intel=intel)
+        s1 = self.estrategia_zscore(futures, spot, badlar, intel)
         all_signals.extend(s1)
 
-        # Estrategia 2: Calendar spread
-        s2 = self.estrategia_calendar_spread(futures, spot)
+        s2 = self.estrategia_gap(futures, spot)
         all_signals.extend(s2)
 
-        # Estrategia 3: OI divergence
-        s3 = self.estrategia_oi_divergence(futures, spot)
+        s3 = self.estrategia_oi_momentum(futures, spot)
         all_signals.extend(s3)
 
-        # Estrategia 4: Volume spike
-        s4 = self.estrategia_volume_spike(futures, spot, badlar)
+        s4 = self.estrategia_volume(futures, spot)
         all_signals.extend(s4)
 
         self._save_history()
 
-        # Log
         counts = {}
         for s in all_signals:
             counts[s.estrategia] = counts.get(s.estrategia, 0) + 1
@@ -573,15 +352,14 @@ class AnalysisEngine:
 
         return all_signals
 
-    def calcular_posicion(self, precio_futuro: float) -> dict:
-        margen_estimado = precio_futuro * 1000 * 0.03
-        max_contratos_por_margen = int(self.capital * 0.6 / margen_estimado)
-        max_contratos_por_riesgo = max(1, int(self.riesgo_max / (precio_futuro * 0.02 * 1000)))
-        contratos = min(max_contratos_por_margen, max_contratos_por_riesgo, 2)
-
+    def calcular_posicion(self, precio_futuro):
+        margen = precio_futuro * 1000 * 0.03
+        max_margen = int(self.capital * 0.6 / margen)
+        max_riesgo = max(1, int(self.riesgo_max / (precio_futuro * self.SL_PCT * 1000)))
+        contratos = min(max_margen, max_riesgo, 2)
         return {
             "contratos": contratos,
-            "margen_requerido": round(margen_estimado * contratos, 0),
-            "riesgo_maximo": round(precio_futuro * 0.02 * 1000 * contratos, 0),
-            "capital_libre": round(self.capital - margen_estimado * contratos, 0),
+            "margen_requerido": round(margen * contratos),
+            "riesgo_maximo": round(precio_futuro * self.SL_PCT * 1000 * contratos),
+            "capital_libre": round(self.capital - margen * contratos),
         }

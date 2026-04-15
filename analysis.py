@@ -353,10 +353,12 @@ class AnalysisEngine:
         return all_signals
 
     def calcular_posicion(self, precio_futuro):
-        margen = precio_futuro * 1000 * 0.03
-        max_margen = int(self.capital * 0.6 / margen)
+        # Margen real Argentina Clearing: ~20% del nocional
+        nocional = precio_futuro * 1000  # 1 contrato = USD 1.000
+        margen = nocional * 0.20  # 20% margen inicial
+        max_margen = int(self.capital * 0.85 / margen)  # Usar max 85% del capital en margen
         max_riesgo = max(1, int(self.riesgo_max / (precio_futuro * self.SL_PCT * 1000)))
-        contratos = min(max_margen, max_riesgo, 2)
+        contratos = min(max_margen, max_riesgo, 2)  # Max 2 contratos (conservador)
         return {
             "contratos": contratos,
             "margen_requerido": round(margen * contratos),

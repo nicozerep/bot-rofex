@@ -13,7 +13,7 @@ from telegram_bot import (
     send_signal, send_market_summary, send_startup_message, send_message,
 )
 from journal import add_trade
-from tracker import register_signal, update_signals
+from tracker import register_signal, update_signals, get_open_positions, get_current_capital
 from adaptive import recalibrate, is_strategy_enabled, format_performance_report
 from market_intel import collect_all_intel
 
@@ -99,6 +99,14 @@ def analizar_y_alertar(datos: dict):
     if is_macro_day(datetime.now()):
         print("  !! ATENCION: dia cercano a dato macro, senales con cautela")
 
+    # Actualizar capital dinámico
+    current_capital = get_current_capital()
+    engine.capital = current_capital
+
+    # Verificar posiciones abiertas
+    open_positions = get_open_positions()
+    has_open = len(open_positions) > 0
+
     # Filtrar señales de estrategias desactivadas por el sistema adaptativo
     active_signals = []
     for signal in all_signals:
@@ -120,6 +128,23 @@ def analizar_y_alertar(datos: dict):
         sent = send_signal(signal, posicion)
         status = "OK" if sent else "FAIL"
         print(f"  [{status}] Alerta enviada: {signal.tipo} {signal.ticker}")
+
+        # Aviso de posición abierta + capital actual
+        if has_open and signal.precio_entrada > 0:
+            open_tickers = ", ".join(p["ticker"] for p in open_positions)
+            send_message(
+                f"⚠️ <b>POSICION ABIERTA</b>: ya tenes {len(open_positions)} trade(s) abierto(s) "
+                f"({open_tickers}). Asegurate de tener margen libre antes de entrar."
+            )
+
+        # Info de capital dinámico
+        if signal.precio_entrada > 0 and current_capital != 600_000:
+            pnl_acum = current_capital - 600_000
+            emoji = "📈" if pnl_acum >= 0 else "📉"
+            send_message(
+                f"{emoji} <b>Capital actual: ${current_capital:,.0f}</b> "
+                f"(P&L acumulado: ${pnl_acum:+,.0f})"
+            )
 
         sent_signals_today.add(key)
 

@@ -358,7 +358,9 @@ class AnalysisEngine:
         margen = nocional * 0.20  # 20% margen inicial
         max_margen = int(self.capital * 0.85 / margen)  # Usar max 85% del capital en margen
         max_riesgo = max(1, int(self.riesgo_max / (precio_futuro * self.SL_PCT * 1000)))
-        contratos = min(max_margen, max_riesgo, 1)  # Max 1 contrato con $600k
+        # Max contratos depende del capital actual (dinámico)
+        max_abs = 1 if self.capital < 1_200_000 else 2
+        contratos = min(max_margen, max_riesgo, max_abs)
         return {
             "contratos": contratos,
             "margen_requerido": round(margen * contratos),

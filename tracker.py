@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 TRACKER_FILE = Path(__file__).parent / "data" / "signal_tracker.json"
+CAPITAL_INICIAL = 600_000
 
 
 def _load() -> list[dict]:
@@ -155,3 +156,19 @@ def get_all_performance() -> dict:
     for e in estrategias:
         result[e] = get_performance(e)
     return result
+
+
+def get_open_positions() -> list[dict]:
+    """Retorna lista de posiciones abiertas."""
+    signals = _load()
+    return [s for s in signals if s["estado"] == "ABIERTA"]
+
+
+def get_current_capital() -> float:
+    """Calcula capital actual: inicial + P&L acumulado de trades cerrados."""
+    signals = _load()
+    pnl_total = sum(
+        s["pnl"] for s in signals
+        if s["estado"] in ("TP", "SL", "TIMEOUT") and s["pnl"]
+    )
+    return CAPITAL_INICIAL + pnl_total

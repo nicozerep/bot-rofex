@@ -172,7 +172,11 @@ class AnalysisEngine:
 
             desvio_badlar = ((tasa - badlar) / badlar * 100) if badlar > 0 else 0
 
-            if z >= 2.0:
+            # Filtro de liquidez: solo contratos con volumen real
+            if volumen < 5000:
+                continue
+
+            if z >= 2.5:
                 # Confirmación OI
                 oi_confirma = self._check_oi_confirmation(ticker, oi_change)
 
@@ -185,8 +189,8 @@ class AnalysisEngine:
                 score += 1 if oi_confirma == "confirma" else 0
                 score -= 1 if macro_risk else 0
 
-                if score <= 0:
-                    continue
+                if score < 2:
+                    continue  # Solo enviar señales con score >= 2
 
                 fuerza = "FUERTE" if score >= 3 else "MODERADA"
                 sl_pct = 0.02
@@ -343,7 +347,7 @@ class AnalysisEngine:
             oi_change_3d = oi - oi_hist[-4] if len(oi_hist) >= 4 else 0
 
             # Divergencia bajista: precio sube + OI baja (posiciones se cierran, no hay convicción)
-            if price_change_3d > 1.0 and oi_change_3d < -5000 and volumen > 10000:
+            if price_change_3d > 1.5 and oi_change_3d < -10000 and volumen > 20000:
                 tasa = calcular_tasa_implicita(precio, spot, dias)
 
                 signals.append(Signal(

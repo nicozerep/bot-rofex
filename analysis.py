@@ -26,7 +26,11 @@ MACRO_EVENTS = [
 ]
 
 
-def is_macro_day(fecha: datetime, buffer_days: int = 1) -> bool:
+def is_macro_day(fecha: datetime = None, buffer_days: int = 1) -> bool:
+    # Usar hora Argentina (UTC-3) para chequear calendario macro
+    from datetime import timedelta
+    if fecha is None:
+        fecha = datetime.utcnow() - timedelta(hours=3)
     for mes, dia in MACRO_EVENTS:
         try:
             evento = datetime(fecha.year, mes, dia)

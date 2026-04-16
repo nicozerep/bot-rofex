@@ -199,9 +199,9 @@ def run_scan():
     """Escanea el mercado y envía solo señales NUEVAS."""
     global sent_signals_today
 
-    # Reset diario a las 9:55
+    # Reset diario a las 9:55 Argentina = 12:55 UTC
     now = datetime.now()
-    if now.hour == 9 and now.minute < 56:
+    if now.hour == 12 and now.minute < 56:
         sent_signals_today = set()
 
     datos = recolectar_datos()
@@ -259,20 +259,23 @@ def run_scheduled():
     print("Escaneo cada 5 min (10:00-17:15) | Alertas instantaneas")
     send_startup_message()
 
-    # Resumen de apertura y cierre
-    schedule.every().day.at("10:00").do(run_once)
-    schedule.every().day.at("15:15").do(run_once)
+    # Horarios en UTC (servidor Oracle está en UTC)
+    # Argentina = UTC-3, entonces 10:00 ARG = 13:00 UTC, 15:00 ARG = 18:00 UTC
 
-    # Reporte semanal de performance (viernes 15:30)
-    schedule.every().friday.at("15:30").do(send_weekly_report)
+    # Resumen de apertura (10:00 ARG = 13:00 UTC) y cierre (15:15 ARG = 18:15 UTC)
+    schedule.every().day.at("13:00").do(run_once)
+    schedule.every().day.at("18:15").do(run_once)
 
-    # Escaneo cada 5 minutos durante la rueda DLR (10:00-15:00)
-    for h in range(10, 15):
+    # Reporte semanal de performance (viernes 15:30 ARG = 18:30 UTC)
+    schedule.every().friday.at("18:30").do(send_weekly_report)
+
+    # Escaneo cada 5 minutos durante la rueda DLR (10:00-15:00 ARG = 13:00-18:00 UTC)
+    for h in range(13, 18):
         for m in range(0, 60, 5):
             hora = f"{h:02d}:{m:02d}"
-            if hora not in ["10:00"]:
+            if hora not in ["13:00"]:
                 schedule.every().day.at(hora).do(run_scan)
-    schedule.every().day.at("15:00").do(run_scan)
+    schedule.every().day.at("18:00").do(run_scan)
 
     print("Esperando proxima ejecucion...\n")
 

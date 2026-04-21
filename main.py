@@ -12,6 +12,7 @@ from analysis import AnalysisEngine, calcular_tasa_implicita, dias_al_vencimient
 from telegram_bot import (
     send_signal, send_market_summary, send_startup_message, send_message,
 )
+from telegram_buttons import send_signal_with_buttons, start_callback_listener
 from journal import add_trade
 from tracker import register_signal, update_signals, get_open_positions, get_current_capital
 from adaptive import recalibrate, is_strategy_enabled, format_performance_report
@@ -116,17 +117,37 @@ def analizar_y_alertar(datos: dict):
             continue
         active_signals.append(signal)
 
-    # Enviar alertas y guardar en journal (solo señales nuevas)
+    # Filtro 1: hora Argentina >= 10:30 (UTC >= 13:30)
+    from datetime import timedelta
+    now_arg = datetime.utcnow() - timedelta(hours=3)
+    hora_valida = now_arg.hour > 10 or (now_arg.hour == 10 and now_arg.minute >= 30)
+
+    # Enviar alertas con reconfirmación (solo señales nuevas)
     for signal in active_signals:
         key = signal_key(signal)
         if key in sent_signals_today:
             continue  # Ya enviada hoy, saltar
 
+        # Si es antes de las 10:30, guardar como pendiente para reconfirmar
+        if not hora_valida:
+            if key not in pending_confirmation:
+                pending_confirmation[key] = (datetime.utcnow(), signal)
+                print(f"  [PENDING] {signal.estrategia} {signal.ticker} - guardado para reconfirmar a las 10:30")
+            continue
+
+        # Si estaba pendiente, verificar que la señal siga activa (reconfirmación)
+        if key in pending_confirmation:
+            # Señal confirmada: se detecto antes y sigue detectandose ahora
+            first_seen, _ = pending_confirmation[key]
+            print(f"  [CONFIRMED] {signal.estrategia} {signal.ticker} - reconfirmada (detectada {first_seen})")
+            del pending_confirmation[key]
+
         posicion = None
         if signal.precio_entrada > 0:
             posicion = engine.calcular_posicion(signal.precio_entrada)
-        sent = send_signal(signal, posicion)
-        status = "OK" if sent else "FAIL"
+        # Usar botones interactivos (Ejecutar/Ignorar)
+        msg_id = send_signal_with_buttons(signal, posicion)
+        status = "OK" if msg_id else "FAIL"
         print(f"  [{status}] Alerta enviada: {signal.tipo} {signal.ticker}")
 
         # Aviso de posición abierta + capital actual
@@ -188,6 +209,8 @@ def enviar_resumen(datos: dict):
 
 
 sent_signals_today: set = set()
+# Señales pendientes de confirmación: key -> (timestamp primera deteccion, signal, posicion)
+pending_confirmation: dict = {}
 
 
 def signal_key(signal) -> str:
@@ -247,17 +270,17 @@ def send_weekly_report():
 
 
 def run_once():
-    """Ejecuta un ciclo completo con resumen."""
+    """Ejecuta un ciclo de escaneo (sin resumen de mercado)."""
     datos, signals = run_scan()
-    enviar_resumen(datos)
     return datos, signals
 
 
 def run_scheduled():
     """Modo automático: escanea cada 15 min durante rueda."""
     print("Bot ROFEX iniciado en modo scheduled")
-    print("Escaneo cada 5 min (10:00-17:15) | Alertas instantaneas")
+    print("Escaneo cada 5 min (10:00-15:00 ARG) | Alertas post 10:30 AM | Botones interactivos")
     send_startup_message()
+    start_callback_listener()  # Escucha clicks en botones Ejecutar/Ignorar
 
     # Horarios en UTC (servidor Oracle está en UTC)
     # Argentina = UTC-3, entonces 10:00 ARG = 13:00 UTC, 15:00 ARG = 18:00 UTC

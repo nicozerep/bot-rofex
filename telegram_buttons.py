@@ -123,20 +123,22 @@ def send_to_sheets(trade: dict) -> bool:
         return False
 
     from datetime import datetime
+    motivo_completo = f"[{trade['estrategia']}] {trade.get('motivo', '')}"
+    detalle = (
+        f"Fuerza: {trade.get('fuerza', '')}/10 | "
+        f"Contratos: {trade.get('contratos', 1)} | "
+        f"Margen: ${trade.get('margen', 0):,.0f} | "
+        f"R:R 1:1.5 (SL 2% / TP 3%)"
+    )
     payload = {
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "tipo": trade["tipo"],
         "posicion": "SHORT" if trade["tipo"] == "VENTA" else "LONG",
         "ticker": trade["ticker"],
-        "estrategia": trade["estrategia"],
-        "fuerza": trade["fuerza"],
         "entrada": trade["precio_entrada"],
         "sl": trade["stop_loss"],
         "tp": trade["take_profit"],
-        "contratos": trade.get("contratos", 1),
-        "margen": trade.get("margen", 0),
-        "motivo": trade.get("motivo", ""),
-        "estado": "EJECUTADO",
+        "motivo": motivo_completo,
+        "detalle": detalle,
     }
     try:
         resp = requests.post(SHEETS_WEBHOOK, json=payload, timeout=15)

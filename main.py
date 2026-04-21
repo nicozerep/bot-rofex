@@ -117,10 +117,10 @@ def analizar_y_alertar(datos: dict):
             continue
         active_signals.append(signal)
 
-    # Filtro 1: hora Argentina >= 10:30 (UTC >= 13:30)
+    # Filtro 1: hora Argentina >= 10:15 (UTC >= 13:15)
     from datetime import timedelta
     now_arg = datetime.utcnow() - timedelta(hours=3)
-    hora_valida = now_arg.hour > 10 or (now_arg.hour == 10 and now_arg.minute >= 30)
+    hora_valida = now_arg.hour > 10 or (now_arg.hour == 10 and now_arg.minute >= 15)
 
     # Enviar alertas con reconfirmación (solo señales nuevas)
     for signal in active_signals:
@@ -275,19 +275,27 @@ def run_once():
     return datos, signals
 
 
+def send_daily_heartbeat():
+    """Aviso diario 10:00 ARG lun-vie confirmando que el bot esta operativo."""
+    from datetime import timedelta
+    now_arg = datetime.utcnow() - timedelta(hours=3)
+    if now_arg.weekday() >= 5:  # sabado=5, domingo=6
+        return
+    send_message("🟢 <b>BOT activado</b>\n\nEscaneando mercado. Recibís alertas a partir de las 10:15.")
+    print(f"[{datetime.now():%H:%M:%S}] Heartbeat enviado")
+
+
 def run_scheduled():
-    """Modo automático: escanea cada 15 min durante rueda."""
+    """Modo automático: escanea cada 5 min durante rueda."""
     print("Bot ROFEX iniciado en modo scheduled")
-    print("Escaneo cada 5 min (10:00-15:00 ARG) | Alertas post 10:30 AM | Botones interactivos")
-    send_startup_message()
+    print("Escaneo cada 5 min (10:00-15:00 ARG) | Alertas post 10:15 AM | Botones interactivos")
     start_callback_listener()  # Escucha clicks en botones Ejecutar/Ignorar
 
     # Horarios en UTC (servidor Oracle está en UTC)
     # Argentina = UTC-3, entonces 10:00 ARG = 13:00 UTC, 15:00 ARG = 18:00 UTC
 
-    # Resumen de apertura (10:00 ARG = 13:00 UTC) y cierre (15:15 ARG = 18:15 UTC)
-    schedule.every().day.at("13:00").do(run_once)
-    schedule.every().day.at("18:15").do(run_once)
+    # Heartbeat diario (10:00 ARG = 13:00 UTC) solo lun-vie
+    schedule.every().day.at("13:00").do(send_daily_heartbeat)
 
     # Reporte semanal de performance (viernes 15:30 ARG = 18:30 UTC)
     schedule.every().friday.at("18:30").do(send_weekly_report)
@@ -296,8 +304,7 @@ def run_scheduled():
     for h in range(13, 18):
         for m in range(0, 60, 5):
             hora = f"{h:02d}:{m:02d}"
-            if hora not in ["13:00"]:
-                schedule.every().day.at(hora).do(run_scan)
+            schedule.every().day.at(hora).do(run_scan)
     schedule.every().day.at("18:00").do(run_scan)
 
     print("Esperando proxima ejecucion...\n")

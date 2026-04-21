@@ -15,7 +15,12 @@ fake = Signal(
     take_profit=1352.18,
     estrategia="TEST",
 )
-posicion = {"contratos": 1, "margen": 278800, "margen_requerido": 278800}
+posicion = {
+    "contratos": 1,
+    "margen": 278800,
+    "margen_requerido": 278800,
+    "capital_libre": 321200,
+}
 msg_id = send_signal_with_buttons(fake, posicion)
 print(f"Senal de prueba enviada. message_id={msg_id}")
 print("Tocá 'Ejecutar' en Telegram para ver si aparece en la sheet")
